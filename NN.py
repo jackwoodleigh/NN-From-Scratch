@@ -6,7 +6,7 @@ def MSE(predicted, actual):
 
 
 def MSE_grad(predicted, actual):
-    return 2 * (predicted - actual)#(predicted - actual)
+    return 2 * (predicted - actual)
 
 
 def sigmoid(x):
@@ -16,8 +16,10 @@ def sigmoid(x):
 def sigmoid_grad(x):
     return sigmoid(x) * (1 - sigmoid(x))
 
+
 def relu(x):
     return np.maximum(0, x)
+
 
 def relu_grad(x):
     grad = np.zeros_like(x)
@@ -25,25 +27,23 @@ def relu_grad(x):
     return grad
 
 
-def cross_entropy(predicted, actual):
-    epsilon = 1e-10
-    return -np.sum(actual * np.log(predicted + epsilon))
+# https://github.com/brianmanderson/Cyclical_Learning_Rate
+def clr(iterations, step_size, base_lr, max_lr, gamma):
+    cycle = np.floor(1 + iterations / (2 * step_size))
+    x = np.abs(iterations / step_size - 2 * cycle + 1)
+    lr = base_lr + (max_lr - base_lr) * np.maximum(0, (1 - x)) * gamma ** (iterations)
+    return lr
 
 
-def cross_entropy_grad(predicted, actual):
-    return predicted - actual
-
-def c_sigmoid(x):
-    return 1 / (1 + 2*np.exp(-1 * 5*x))
 
 class Layer:
 
-    def __init__(self, input_count, node_count):
+    def __init__(self, input_count, node_count, name):
         self.x = np.zeros((input_count, 1))
-        self.out = np.zeros((node_count, 1))
-
+        self.out = []
+        self.name = name
         # create links from all nodes to input nodes
-        self.w = np.random.rand(node_count, input_count) * np.sqrt(2. / input_count)
+        self.w = np.random.rand(node_count, input_count) / input_count
 
         # create bias for each node
         self.b = np.random.rand(node_count, 1)
@@ -56,18 +56,39 @@ class Layer:
 
     def output(self, x):
         self.x = x
-        self.out = np.dot(self.w, x) + self.b
-        return relu(self.out)
-################################################
-    def apply_gradient(self, learning_rate):
-        # put iterations in to enable batches  / iterations_preformed
+        out = np.dot(self.w, x) + self.b
+        self.out.append(out)
+        return self.activation(out)
+
+    def activation(self, x):
+        if self.name != 0:
+            return relu(x)
+        else:
+            return x
+
+    def activation_grad(self, x):
+        if self.name != 0:
+            return relu_grad(x)
+        else:
+            return 1
+
+
+
+    def apply_gradient(self, learning_rate, lambda_reg, batch_size):
+        # l2
+
+        self.dw += lambda_reg * self.w
+
         self.w -= learning_rate * self.dw
         self.b -= learning_rate * self.db
+
+        # reset
         self.dw = np.zeros_like(self.w)
         self.db = np.zeros_like(self.b)
+        self.out = []
 
-    def calculate_grad(self, dj_dy):
-        dj_da = dj_dy * relu_grad(self.out)
+    def calculate_grad(self, dj_dy, epoch):
+        dj_da = dj_dy * self.activation_grad(self.out[epoch])
         self.dw += np.dot(dj_da, self.x.T)
         self.db += dj_da
         return np.dot(self.w.T, dj_da)
@@ -79,11 +100,9 @@ class Network:
         self.shape = network_shape
 
         # making layer classes for every layer except input
-        self.layers = [Layer(network_shape[i - 1], network_shape[i]) for i in range(1, len(network_shape))]
+        self.layers = [Layer(network_shape[i - 1], network_shape[i], len(network_shape) - i + 1) for i in range(1, len(network_shape))]
 
-        self.learning_rate = 0.000013
 
-        self.alpha = 0.5
 
 
     def forward_pass(self, input):
@@ -95,32 +114,31 @@ class Network:
 
 
 
-    def backprop(self, pred, actual, learning_rate):
-        # print(MSE(pred, actual))
-        
+    def backprop(self, pred, actual, lambda_reg, epoch):
         dj_dy = MSE_grad(pred, actual)
         for layer in reversed(self.layers):
-            dj_dy = layer.calculate_grad(dj_dy)
-            layer.apply_gradient(learning_rate)
+            dj_dy = layer.calculate_grad(dj_dy, epoch)
+            #layer.apply_gradient(learning_rate, lambda_reg)
 
 
-    def train(self, x_train, y_train, epoch, learning_rate):
-        #print(c_sigmoid(1 - ((epoch - 6)/epoch)))
+    def train(self, x_train, y_train, epoch, lambda_reg, min_lr, max_lr, step_size, gamma):
+
         for e in range(epoch):
-            all_pred = []
             total_loss = 0
-                # 2 * c_sigmoid(1-(epoch - e)/epoch) *
-
-            l = (e+1) * learning_rate
-
 
             for i in range(len(x_train)):
+                lr = clr(i, step_size, min_lr, max_lr, gamma)
                 pred = self.forward_pass(x_train[i])
-                all_pred.append(pred)
-                self.backprop(pred, y_train[i], l)
+                self.backprop(pred, y_train[i], lambda_reg, 0)
+
+                for layer in reversed(self.layers):
+                    layer.apply_gradient(lr, lambda_reg, 1)
+
                 total_loss += MSE(pred, y_train[i])
             print(f"{e}: {total_loss / len(x_train)}")
         print()
+
+
 
 
 
@@ -130,7 +148,6 @@ class Network:
         for i in range(len(x_test)):
             pred = self.forward_pass(x_test[i])
             num = np.argmax(pred)
-            #print(f"{np.argmax(y_test[i])} {num}")
             if y_test[i][num][0] == 1:
                 true += 1
             else:
